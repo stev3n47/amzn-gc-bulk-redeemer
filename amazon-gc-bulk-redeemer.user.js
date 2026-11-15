@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Gift Card Bulk Redeemer
 // @namespace    https://github.com/stev3n47/amzn-gc-bulk-redeemer
-// @version      1.0.2
+// @version      1.0.3
 // @description  Paste or load a list of Amazon gift card claim codes and redeem them automatically on the redeem page.
 // @author       stev3n47
 // @homepageURL  https://github.com/stev3n47/amzn-gc-bulk-redeemer
@@ -163,6 +163,10 @@
     }
     const input = inputEl(), btn = submitEl();
     if (!input || !btn) {
+      if (onRedeemPage()) {
+        location.assign(location.origin + '/gc/redeem');
+        return;
+      }
       pause('Could not find the redeem form on this page.');
       return;
     }
@@ -229,6 +233,7 @@
       pause('Amazon is showing a CAPTCHA. Solve it on the page, then press Resume.');
       return;
     }
+    const hadInFlight = !!state.current;
     if (state.current) {
       const res = classifyResult();
       recordResult(res ? res.status : 'review', res ? res.msg : 'Result unclear — check manually', res);
@@ -244,11 +249,20 @@
       render();
       return;
     }
-    // Wait, then submit the next code. Page reload provides extra spacing between attempts.
-    render(); // re-render now that the in-flight result has been recorded
-    const wait = state.delayMs + Math.random() * 800;
+    // Wait after a submission result; if we just navigated back from the success page, submit right away.
+    render();
+    const wait = !hadInFlight && formEl() ? 300 : state.delayMs + Math.random() * 800;
+    const nextStep = () => {
+      if (!state.running || state.paused) return;
+      if (formEl()) submitNext();
+      else {
+        const again = $('a[href*="/gc/redeem"]');
+        if (again) again.click();
+        else location.assign(location.origin + '/gc/redeem');
+      }
+    };
     armCountdown(wait);
-    setTimeout(submitNext, wait);
+    setTimeout(nextStep, wait);
   }
 
   /* ---------------- UI ---------------- */
@@ -693,7 +707,7 @@
     render();
   }
 
-  const onRedeemPage = () => !!formEl();
+  const onRedeemPage = () => !!(formEl() || $('#alertRedemptionSuccess') || /\/gc\/redeem/i.test(location.pathname));
 
   if (onRedeemPage()) {
     mount();
