@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Gift Card Bulk Redeemer
 // @namespace    https://github.com/stev3n47/amzn-gc-bulk-redeemer
-// @version      1.0.1
+// @version      1.0.2
 // @description  Paste or load a list of Amazon gift card claim codes and redeem them automatically on the redeem page.
 // @author       stev3n47
 // @homepageURL  https://github.com/stev3n47/amzn-gc-bulk-redeemer
@@ -47,6 +47,7 @@
     current: null,          // code submitted, awaiting result on next page load
     queue: [],              // codes still to try
     results: [],            // { code, status, msg, ts }  status: done|already|failed|review
+    debugLog: [],           // { ts, code, url, status, msg, alerts, gcNodes, snippet }
     failsInRow: 0,
     stats: { done: 0, already: 0, failed: 0, review: 0 },
   });
@@ -112,10 +113,39 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  function recordResult(status, msg) {
+  function captureDebugSnapshot(code, res) {
+    const alerts = [...document.querySelectorAll('.a-alert, .a-alert-inline, [role="alert"], [id*="alert" i], [id*="error" i]')]
+      .map(el => ({
+        id: el.id || null,
+        cls: el.className,
+        hidden: el.classList.contains('aok-hidden') || el.classList.contains('gc-hide') || el.offsetParent === null,
+        text: el.innerText.trim().slice(0, 300),
+      }))
+      .filter(a => a.text || (!a.hidden && a.id));
+
+    const gcNodes = [...document.querySelectorAll('[id^="gc-"]')]
+      .map(el => ({ id: el.id, cls: el.className, text: el.innerText.trim().slice(0, 200) }))
+      .filter(n => n.text);
+
+    const main = $('#gc-redemption-form')?.parentElement || $('main') || document.body;
+    state.debugLog.push({
+      ts: new Date().toISOString(),
+      code,
+      url: location.pathname + location.search,
+      status: res ? res.status : 'review',
+      msg: res ? res.msg : 'Result unclear',
+      alerts,
+      gcNodes,
+      snippet: (main ? main.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 500),
+    });
+    if (state.debugLog.length > 25) state.debugLog = state.debugLog.slice(-25);
+  }
+
+  function recordResult(status, msg, res) {
     const code = state.current;
     state.current = null;
     if (!code) return;
+    captureDebugSnapshot(code, res || { status, msg });
     state.results.push({ code, status, msg: msg || '', ts: Date.now() });
     if (status in state.stats) state.stats[status]++;
     state.failsInRow = (status === 'failed' || status === 'review') ? state.failsInRow + 1 : 0;
@@ -201,7 +231,7 @@
     }
     if (state.current) {
       const res = classifyResult();
-      recordResult(res ? res.status : 'review', res ? res.msg : 'Result unclear — check manually');
+      recordResult(res ? res.status : 'review', res ? res.msg : 'Result unclear — check manually', res);
     }
     if (state.paused) return;
     if (state.failsInRow >= 3) {
@@ -505,7 +535,7 @@
     const banner = s.paused
       ? `<div class="banner w">${icon('warn', 15)}<div>${esc(s.pauseReason || 'Paused.')}</div></div>`
       : allDone()
-        ? `<div class="banner i">${icon('check', 15)}<div><b>Finished.</b> ${s.stats.done} redeemed${totalRedeemed() ? ` (~${totalRedeemed()} added)` : ''}, ${s.stats.already} already applied, ${s.stats.failed} failed.</div></div>`
+        ? `<div class="banner i">${icon('check', 15)}<div><b>Finished.</b> ${s.stats.done} redeemed${totalRedeemed() ? ` (~${totalRedeemed()} added)` : ''}, ${s.stats.already} already applied, ${s.stats.failed} failed${s.stats.review ? `, ${s.stats.review} review` : ''}.</div></div>`
         : '';
 
     const setup = (!s.running || s.paused) ? `
@@ -532,7 +562,10 @@
            <button class="btn ghost" id="reset" title="Clear queue and results">${icon('trash')}</button>`;
 
     const copyBtn = s.results.length
-      ? `<button class="btn sec" id="copy" style="margin-top:8px">${icon('copy')} Copy results</button>` : '';
+      ? `<div class="row" style="margin-top:8px">
+           <button class="btn sec grow" id="copy">${icon('copy')} Copy results</button>
+           <button class="btn ghost" id="copydbg" title="Copy DOM diagnostic log for troubleshooting">Debug log</button>
+         </div>` : '';
 
     shadow.innerHTML = `<style>${CSS}</style>
       <div class="card" role="dialog" aria-label="Gift card bulk redeemer">
@@ -631,6 +664,15 @@
         ...state.results.map(r => `${r.code},${r.status},"${(r.msg || '').replace(/"/g, "'")}"`)].join('\n');
       try { await navigator.clipboard.writeText(csv); log('Results copied to clipboard.'); }
       catch { log('Clipboard blocked — select the queue text manually.'); }
+    });
+    on('copydbg', 'click', async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(state.debugLog, null, 2));
+        log(`Copied ${state.debugLog.length} debug snapshot(s) to clipboard.`);
+      } catch {
+        console.log('[gc-bulk debug]', state.debugLog);
+        log('Clipboard blocked — debug log printed to DevTools Console.');
+      }
     });
   }
 
