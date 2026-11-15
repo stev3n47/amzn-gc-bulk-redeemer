@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Gift Card Bulk Redeemer
 // @namespace    https://github.com/stev3n47/amzn-gc-bulk-redeemer
-// @version      1.0.3
+// @version      1.0.4
 // @description  Paste or load a list of Amazon gift card claim codes and redeem them automatically on the redeem page.
 // @author       stev3n47
 // @homepageURL  https://github.com/stev3n47/amzn-gc-bulk-redeemer
@@ -46,7 +46,8 @@
     collapsed: false,
     current: null,          // code submitted, awaiting result on next page load
     queue: [],              // codes still to try
-    results: [],            // { code, status, msg, ts }  status: done|already|failed|review
+    results: [],            // { code, status, msg, balance, ts }  status: done|already|failed|review
+    lastBalance: '',
     debugLog: [],           // { ts, code, url, status, msg, alerts, gcNodes, snippet }
     failsInRow: 0,
     stats: { done: 0, already: 0, failed: 0, review: 0 },
@@ -145,8 +146,12 @@
     const code = state.current;
     state.current = null;
     if (!code) return;
-    captureDebugSnapshot(code, res || { status, msg });
-    state.results.push({ code, status, msg: msg || '', ts: Date.now() });
+    const cleanMsg = (msg || '').replace(/\s+/g, ' ').trim();
+    const balEl = $('#gc-current-balance');
+    const balance = balEl ? balEl.innerText.trim() : '';
+    if (balance) state.lastBalance = balance;
+    captureDebugSnapshot(code, res || { status, msg: cleanMsg });
+    state.results.push({ code, status, msg: cleanMsg, balance, ts: Date.now() });
     if (status in state.stats) state.stats[status]++;
     state.failsInRow = (status === 'failed' || status === 'review') ? state.failsInRow + 1 : 0;
     save();
@@ -278,6 +283,7 @@
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72c0 .8.87 1.3 1.56.88l10.3-6.86a1.04 1.04 0 0 0 0-1.76L9.56 4.26A1.04 1.04 0 0 0 8 5.14Z"/></svg>',
     pauseI: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
     stopI: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+    download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>',
     copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
     chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
@@ -577,15 +583,19 @@
 
     const copyBtn = s.results.length
       ? `<div class="row" style="margin-top:8px">
-           <button class="btn sec grow" id="copy">${icon('copy')} Copy results</button>
-           <button class="btn ghost" id="copydbg" title="Copy DOM diagnostic log for troubleshooting">Debug log</button>
+           <button class="btn sec grow" id="export" title="Download results as CSV">${icon('download')} Export CSV</button>
+           <button class="btn sec" id="copy" title="Copy CSV to clipboard">${icon('copy')} Copy</button>
+           <button class="btn ghost" id="copydbg" title="Copy DOM diagnostic log">Debug</button>
          </div>` : '';
+
+    const balNow = ($('#gc-current-balance')?.innerText.trim()) || s.lastBalance;
+    const subLine = balNow ? `${hostDomain()} · ${balNow}` : hostDomain();
 
     shadow.innerHTML = `<style>${CSS}</style>
       <div class="card" role="dialog" aria-label="Gift card bulk redeemer">
         <div class="hd">
           <div class="logo">${icon('logo', 17)}</div>
-          <div class="tt"><h1>Gift Card Runner</h1><div class="sub">${hostDomain()}</div></div>
+          <div class="tt"><h1>Gift Card Runner</h1><div class="sub">${esc(subLine)}</div></div>
           <button class="min" id="min" aria-label="Collapse panel">${icon('chev', 15)}</button>
         </div>
         <div class="stats">
@@ -618,6 +628,19 @@
 
   function hostDomain() {
     return location.hostname.replace(/^www\./, '');
+  }
+
+  function buildResultsCsv() {
+    const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = state.results.map(r => [
+      q(r.code),
+      q(r.status),
+      q(r.status === 'done' ? r.msg : ''),
+      q(r.balance || ''),
+      q((r.msg || '').replace(/\s+/g, ' ').trim()),
+      q(r.ts ? new Date(r.ts).toISOString() : ''),
+    ].join(','));
+    return ['code,status,amount,balance_after,message,timestamp', ...rows].join('\n');
   }
 
   function wire() {
@@ -673,11 +696,23 @@
     on('resume', 'click', resume);
     on('stop', 'click', stop);
     on('reset', 'click', resetAll);
+    on('export', 'click', () => {
+      const csv = buildResultsCsv();
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const d = new Date();
+      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+      a.href = url;
+      a.download = `amazon-gc-results-${stamp}.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      log(`Exported ${state.results.length} result(s) to CSV.`);
+    });
     on('copy', 'click', async () => {
-      const csv = ['code,status,message',
-        ...state.results.map(r => `${r.code},${r.status},"${(r.msg || '').replace(/"/g, "'")}"`)].join('\n');
+      const csv = buildResultsCsv();
       try { await navigator.clipboard.writeText(csv); log('Results copied to clipboard.'); }
-      catch { log('Clipboard blocked — select the queue text manually.'); }
+      catch { log('Clipboard blocked — use Export CSV instead.'); }
     });
     on('copydbg', 'click', async () => {
       try {
